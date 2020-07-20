@@ -5,7 +5,7 @@
 
 (def letfn-spec
   (a/lexical-scope-spec
-    (a/symbol-node-spec "invocation")
+    (a/symbol-node-spec "leftfn")
     (a/node-spec :vector "fnspecs"
       (s/* (a/node-spec :list "fnspec"
              (s/seq (a/simple-symbol-node-spec "fname" a/add-as-local-binding-analyzer)
@@ -16,7 +16,7 @@
 
 (def let-spec
   (a/lexical-scope-spec
-    (a/symbol-node-spec "invocation")
+    (a/symbol-node-spec "let")
     (a/bindings-vec-spec "bindings")
     (a/body-exprs-spec* "body-expr")))
 

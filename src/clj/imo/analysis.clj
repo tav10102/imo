@@ -175,7 +175,7 @@
 ;; Core analyzers and specs
 ;;
 
-(declare analyze-with default-node-analyzer node-satisfies? get-node-analyzer get-form-analyzer)
+(declare analyze-with default-node-analyzer get-node-analyzer get-form-analyzer)
 
 (defn analysis-ex
   "Constructs new analysis exception with message and lazy position"
@@ -195,20 +195,6 @@
    ":cljs"    2
    ":clj"     3})
 
-(defn- analyze-reader-cond [inner-analyzer ctx [_ list]]
-  (letfn [(reader-cond-list-analyzer [ctx [_ & forms]]
-            (loop [[[feat val] & rem] (->> (partition 2 forms)
-                                           (sort-by (comp feature-analyze-order ffirst)))
-                   ctx ctx
-                   res (transient [:list])]
-              (if feat
-                (let [[ctx' feat'] (analyze-with default-node-analyzer ctx feat)
-                      [ctx' val'] (analyze-with inner-analyzer ctx' val)]
-                  (recur rem ctx' (conj! (conj! res feat') val')))
-                [ctx (persistent! res)])))]
-    (let [[ctx' list'] (analyze-with reader-cond-list-analyzer ctx list)]
-      [ctx' [:reader-cond list']])))
-
 (defn- analyze-meta-nodes [ctx nodes]
   (when (some? nodes)
     (loop [ctx ctx
@@ -221,13 +207,6 @@
                              (recur ctx' xs (conj! result node'))))
         [ctx (seq (persistent! result))]))))
 
-(defn- reader-cond-satisfies? [predicate [_ [_ & forms]]]
-  (loop [ok? (not (empty? forms))
-         [feat val & rem] forms]
-    (if (and feat ok?)
-      (recur (node-satisfies? predicate val) rem)
-      ok?)))
-
 (declare get-node-analyzer get-form-analyzer)
 
 (defn default-node-analyzer
@@ -236,16 +215,6 @@
   [ctx node]
   (let [analyze-f (get-node-analyzer node)]
     (analyze-f ctx node)))
-
-(defn node-satisfies?
-  "Returns boolean whether the node satisfies the given
-   predicate or not"
-  [predicate node]
-  {:pre [(node? node)
-         (ifn? predicate)]}
-  (if (= :reader-cond (first node))
-    (reader-cond-satisfies? predicate node)
-    (predicate node)))
 
 (defn analyze-with
   "Analyzes the given node and its meta nodes using the supplied
@@ -261,9 +230,7 @@
             state))
         (try
           (let [[ctx m] state
-                [ctx' node'] (if (= :reader-cond (first node))
-                               (analyze-reader-cond analyzer ctx node)
-                               (analyzer ctx node))
+                [ctx' node'] (analyzer ctx node)
                 _ (assert (ctx? ctx') (str "invalid result context while analyzing ast node: " (node->source node)))
                 _ (assert (vector? node') (str "invalid result node while analyzing ast node: " (node->source node)))
                 m' (if-some [node-m (meta node')]
@@ -302,12 +269,6 @@
                        "\n ast-node:      " (pr-str node)))
           [ctx-out node-out])))
 
-(defn get-node-type [ctx node]
-  (first node))
-
-(defn get-literal-content [ctx node]
-  (second node))
-
 (defn add-as-ns-binding-analyzer
   "(Post) analyzer that adds the given symbol node as fully
    qualified binding using the current namespace for binding's
@@ -337,7 +298,7 @@
    the given node type"
   {:pre [(keyword? expected-type)]}
   (fn type-matches-expected? [ctx node]
-    (= expected-type (get-node-type ctx node))))
+    (= expected-type (first node))))
 
 (defn val= [expected-val]
   "Creates a `(ctx, node) -> bool` predicate that matches
@@ -382,14 +343,9 @@
           (cond
             (nil? node)
             (s/error parent nil err-msg-nil)
-            (node-satisfies? predicate node)
+            (predicate node)
             (let [[ctx' n'] (analyze-with analyzer ctx node)]
               (Acc. ctx' (next rem) (conj! res n')))
-            (= :reader-cond-splice (first node))
-            ; Techically splicing reader conditional should be like normal reader conditional...
-            ; However supporting it would make layouting extremely complex, hence just bailing
-            ; out here (at least for now)
-            (s/error parent node "imo does not support splicing reader conditional here")
             :else (s/error parent node err-msg-not-expected)))))))
 
 (defn node-spec
@@ -470,6 +426,62 @@
    with `:body-expr true` metadata"
   [spec-name]
   (s/* (body-expr-spec spec-name)))
+
+(defn reader-cond-spec
+  "Creates a spec that indicates that the node **might** be a reader
+   conditional node (but not have to be it). In this case, all platform
+   values must conform the given `value-spec`. Otherwise the encountered
+   node must conform the `value-spec`. Spec name will be infered from
+   the value spec.
+
+   Analyzed node might be either `:reader-cond` or `:reader-cond-splice`
+   so `post-analyzer` must check if before handling the node."
+  ([value-spec] (reader-cond-spec value-spec nil))
+  ([value-spec post-analyzer]
+   {:pre [(s/spec? value-spec)
+          (or (nil? post-analyzer)
+              (ifn? post-analyzer))]}
+   (let [reader-cond-analyzer (s/as-analyzer
+                                (node-spec :list "features"
+                                  (s/* (s/seq (keyword-node-spec "feature")
+                                              value-spec)))
+                                post-analyzer)
+         reader-cond-splice-analyzer (s/as-analyzer
+                                       (node-spec :list "features"
+                                         (s/* (s/seq (keyword-node-spec "feature")
+                                                     (s/choose
+                                                       (type= :list)
+                                                       (node-spec :list "values"
+                                                         (s/+ value-spec))
+                                                       (type= :vector)
+                                                       (node-spec :vector "values"
+                                                         (s/+ value-spec))))))
+                                       post-analyzer)]
+     (reify Spec
+       (name [_] (.name ^Spec value-spec))
+       (run [_ parent input last?]
+         (let [ctx (.-ctx ^Acc input)
+               rem (.-remaining ^Acc input)
+               res (.-result ^Acc input)
+               node (first rem)]
+           (case (first node)
+             :reader-cond
+             (let [[ctx' n'] (analyze-with reader-cond-analyzer ctx node)]
+               (Acc. ctx' (next rem) (conj! res n')))
+             :reader-cond-splice
+             (let [[ctx' n'] (analyze-with reader-cond-splice-analyzer ctx node)]
+               (Acc. ctx' (next rem) (conj! res n')))
+             (.run ^Spec value-spec parent input last?))))))))
+
+(defn cond-features [reader-cond-node]
+  {:pre [(contains? #{:reader-cond-splice :reader-cond} (first reader-cond-node))]}
+  (if (:reader-cond-splice reader-cond-node)
+    (->> (next (second reader-cond-node))
+         (partition 2 2)
+         (mapcat (comp next second)))
+    (->> (next (second reader-cond-node))
+         (partition 2 2)
+         (map second))))
 
 (declare recur-binding-form-spec)
 
@@ -575,8 +587,8 @@
 
 (defn- list-node-analyzer [ctx [_ i :as node]]
   (if (and (not= :quote (:mode ctx))
-           (= :symbol (get-node-type ctx i)))
-    (let [local-name (symbol (get-literal-content ctx i))
+           (= :symbol (first i)))
+    (let [local-name (symbol (second i))
           invocation (first (resolve-fq-name ctx local-name))
           form-name (get (:sym-resolution ctx) invocation invocation)
           analyzer (get-form-analyzer form-name)

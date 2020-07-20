@@ -13,14 +13,14 @@
     (s/as-analyzer fn-tail-spec (fn [ctx node] [ctx (vary-meta node assoc :signature true)]))))
 
 (def fn-spec
-  (s/seq (a/symbol-node-spec "invocation")
+  (s/seq (a/symbol-node-spec "fn")
          (s/? (a/simple-symbol-node-spec "fname" a/add-as-ns-binding-analyzer))
          (s/choose
            (a/type= :vector) fn-tail-spec
            (a/type= :list) (s/+ signature-spec))))
 
 (def defn-spec
-  (s/seq (a/symbol-node-spec "invocation")
+  (s/seq (a/symbol-node-spec "defn")
          (a/simple-symbol-node-spec "fname" a/add-as-ns-binding-analyzer)
          (s/? (a/string-node-spec "doc-string"))
          (s/? (a/map-node-spec "attrs-map"))
