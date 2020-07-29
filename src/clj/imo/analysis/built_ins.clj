@@ -1,4 +1,4 @@
-(ns imo.analysis.built-in)
+(ns imo.analysis.built-ins)
 
 (def clojure-core-exports
   '[primitives-classnames

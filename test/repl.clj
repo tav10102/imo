@@ -54,6 +54,9 @@
                   x))
               node)))
 
+(defmacro explain* [& body]
+  `(explain (ast* ~@body)))
+
 (defn pr-ast
   "Prints explained data (and metadata) from the given ast node"
   [ast]

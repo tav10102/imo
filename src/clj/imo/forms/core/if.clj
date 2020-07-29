@@ -1,11 +1,24 @@
 (ns imo.forms.core.if
-  (:require [imo.analysis.spec :as s]
-            [imo.analysis :as a]))
+  (:require [imo.analysis.core :as a]))
 
-(def if-spec
-  (s/seq (a/symbol-node-spec "invocation")
-         (a/any-node-spec "test")
-         (a/body-expr-spec "then")
-         (s/? (a/body-expr-spec "else"))))
+(a/defspec ::condition (a/named ::a/any "condition"))
+(a/defspec ::then (a/named ::a/body-expr "'then' expression"))
+(a/defspec ::else (a/? ::a/body-expr))
 
-(a/set-form-analyzer! 'if (s/as-analyzer if-spec))
+(a/defspec ::if [::a/symbol ::condition ::then ::else])
+
+(a/defform 'if #(a/analyze ::if %1 %2))
+
+
+(comment
+
+  (repl/explain*
+    (if foo
+      "lol"
+      "bal"))
+
+  (repl/explain*
+    (if (= 1 2)
+      "lol"))
+
+  '-)

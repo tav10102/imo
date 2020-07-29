@@ -1,34 +1,31 @@
 (ns imo.forms.core.def
-  (:require [imo.analysis.spec :as s]
-            [imo.analysis :as a]
-            [imo.layout :as l]))
+  (:require [imo.analysis.core :as a]
+            [imo.analysis.exception :refer [analysis-ex]]))
 
-(def ^:private def-analyzer
-  (let [with-doc-str-analyzer (-> (s/seq (a/symbol-node-spec "invocation")
-                                         (a/simple-symbol-node-spec "name" a/add-as-ns-binding-analyzer)
-                                         (a/string-node-spec "doc-string")
-                                         (s/? (a/body-expr-spec "value")))
-                                  (s/as-analyzer))
-        no-doc-str-analyzer (-> (s/seq (a/symbol-node-spec "invocation")
-                                       (a/simple-symbol-node-spec "name" a/add-as-ns-binding-analyzer)
-                                       (s/custom (fn [_ input] (update input :result #(conj! % nil))))
-                                       (s/? (a/body-expr-spec "value")))
-                                (s/as-analyzer))]
-    (fn [ctx [_ & children :as node]]
-      (if (>= (count children) 4)
-        (with-doc-str-analyzer ctx node)
-        (no-doc-str-analyzer ctx node)))))
+(a/defspec ::name (a/named ::a/ns-sym-binding "name"))
+(a/defspec ::doc-str (a/named (a/? ::a/string) "doc-string"))
+(a/defspec ::init-expr (a/named (a/? ::a/body-expr) "init expression"))
 
-(def ^:private defonce-analyzer
-  (-> (s/seq (a/symbol-node-spec "invocation")
-             (a/simple-symbol-node-spec "name" a/add-as-ns-binding-analyzer)
-             (a/any-node-spec "expr"))
-      (s/as-analyzer)))
+(a/defspec ::def+doc [::a/symbol ::name ::doc-str ::init-expr])
+(a/defspec ::def [::a/symbol ::name ::init-expr])
 
-(doto 'def
-  (a/set-form-analyzer! def-analyzer)
-  (l/mark-as-groupable!))
+(a/defform 'def #(case (dec (count %2))
+                   (2 3) (a/analyze ::def %1 %2)
+                   4 (a/analyze ::def+doc %1 %2)
+                   (throw (analysis-ex "def must be form (def name doc-str? init-expr?)" %2))))
 
-(doto 'clojure.core/defonce
-  (a/set-form-analyzer! defonce-analyzer)
-  (l/mark-as-groupable!))
+(a/defform 'clojure.core/defonce #(a/analyze ::def %1 %2))
+
+
+(comment
+
+  (repl/explain*
+    (def foo
+      "this is a doc-str"
+      123))
+
+  (repl/explain*
+    (defonce lol
+      "bal"))
+
+  '-)

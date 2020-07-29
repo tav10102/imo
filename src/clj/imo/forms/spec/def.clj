@@ -1,16 +1,5 @@
 (ns imo.forms.spec.def
-  (:require [imo.analysis.spec :as s]
-            [imo.analysis :as a]
-            [imo.layout :as l]))
+  (:require [imo.analysis.core :as a]))
 
-(def ^:private def-analyzer
-  (-> (s/seq (a/symbol-node-spec "invocation")
-             (s/choose
-               (a/type= :keyword) (a/keyword-node-spec "spec-name")
-               (a/type= :symbol) (a/symbol-node-spec "spec-name"))
-             (a/any-node-spec "spec-form"))
-      (s/as-analyzer)))
-
-(doto 'clojure.spec.alpha/def
-  (a/set-form-analyzer! def-analyzer)
-  (l/mark-as-groupable!))
+(a/defspec ::def [(a/alt ::a/keyword ::a/symbol) ::a/body-expr])
+(a/defform 'clojure.spec.alpha/def #(a/analyze ::def %1 %2))

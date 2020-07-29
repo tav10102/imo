@@ -1,25 +1,11 @@
 (ns imo.forms.core.let
-  (:require [imo.analysis.spec :as s]
-            [imo.analysis :as a]
-            [imo.forms.core.fn :refer [fn-tail-spec signature-spec]]))
+  (:require [imo.analysis.core :as a]
+            [imo.forms.core.fn :as fn]))
 
-(def letfn-spec
-  (a/lexical-scope-spec
-    (a/symbol-node-spec "leftfn")
-    (a/node-spec :vector "fnspecs"
-      (s/* (a/node-spec :list "fnspec"
-             (s/seq (a/simple-symbol-node-spec "fname" a/add-as-local-binding-analyzer)
-                    (s/choose
-                      (a/type= :vector) fn-tail-spec
-                      (a/type= :list) (s/+ signature-spec))))))
-    (a/body-exprs-spec* "body-expr")))
+(a/defspec ::let (a/in-scope ::a/symbol ::a/bindings-vec (a/* ::a/body-expr)))
+(a/defform 'clojure.core/let #(a/analyze ::let %1 %2))
 
-(def let-spec
-  (a/lexical-scope-spec
-    (a/symbol-node-spec "let")
-    (a/bindings-vec-spec "bindings")
-    (a/body-exprs-spec* "body-expr")))
-
-(a/set-form-analyzer! 'clojure.core/let (s/as-analyzer let-spec))
-
-(a/set-form-analyzer! 'clojure.core/letfn (s/as-analyzer letfn-spec))
+(a/defspec ::fn-spec (a/list-node [::a/local-sym-binding ::fn/fn-tail]))
+(a/defspec ::fn-specs (a/vec-node (a/* ::fn-spec)))
+(a/defspec ::letfn [::a/symbol ::fn-specs (a/* ::a/body-expr)])
+(a/defform 'clojure.core/letfn #(a/analyze ::letfn %1 %2))
