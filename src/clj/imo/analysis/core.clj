@@ -273,7 +273,7 @@
 
 (defn literal [s]
   {:pre [(string? s)]}
-  (let [expectation (format "\"%s/\"" s)]
+  (let [expectation (format "\"%s\"" s)]
     (node #(= s (second %)) expectation default-node-analyzer)))
 
 (defrecord InScopeSpec [^Spec inner]

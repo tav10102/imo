@@ -3,10 +3,11 @@
 
 ;; shared
 (a/defspec ::binding [::a/any-binding (a/named ::a/any "init expression")])
-(a/defspec ::filter (a/alt [":let" ::a/bindings-vec]
-                           [":while" ::a/body-expr]
-                           [":when" ::a/body-expr]))
-(a/defspec ::seq-expr-binding [::binding (a/* ::filter)])
+(a/defspec ::rest (a/alt [":let" ::a/bindings-vec]
+                         [":while" ::a/body-expr]
+                         [":when" ::a/body-expr]
+                         ::binding))
+(a/defspec ::seq-expr-binding [::binding (a/* ::rest)])
 (a/defspec ::seq-expr-bindings (a/vec-node (a/* ::seq-expr-binding)))
 
 ;; for
@@ -31,8 +32,9 @@
       b))
 
   (repl/explain*
-    (for [a [1 2 3]
-          :foo [b (inc a)]]
+    (for [_ [1 2 3]
+          a [1 2 3]
+          :let [b (inc a)]]
       b))
 
   -)

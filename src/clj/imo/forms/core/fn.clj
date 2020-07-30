@@ -17,7 +17,7 @@
 ;; defn
 (a/defspec ::fname (a/named ::a/ns-sym-binding "function name"))
 (a/defspec ::doc-str (a/? ::a/string))
-(a/defspec ::defn [::a/symbol ::fname ::doc-str ::fn-tail])
+(a/defspec ::defn [::a/symbol ::fname ::doc-str ::attr-map ::fn-tail])
 (a/defform 'clojure.core/defn #(a/analyze ::defn %1 %2))
 (a/defform 'clojure.core/defn- #(a/analyze ::defn %1 %2))
 
