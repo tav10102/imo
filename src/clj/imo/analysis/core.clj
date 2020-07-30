@@ -10,7 +10,7 @@
 
 ;;;; analysis core
 
-(declare analyze-node-with default-node-analyzer specify)
+(declare analyze-node-with default-node-analyzer reader-cond-analyzer specify)
 
 (def ^:private node-analyzers (volatile! {}))
 
@@ -71,7 +71,7 @@
               (warn (ex-position ex node) (ex-message ex)))
             (let [[ctx m] state+meta+node
                   [ctx' node'] (generic-node-analyzer ctx node)
-                  m' (assoc! m :formatting :whitespace)]
+                  m' (assoc! m :formatting :whitespace :invalid? true)]
               [ctx' m' node'])))
         (let [[ctx m node] state+meta+node]
           (if-let [[ctx' nodes] (analyze-meta-nodes ctx (:hidden m))]
@@ -95,10 +95,9 @@
 (definterface Spec
   (expectations [])
   (accept [node])
-  (advance [state]))
+  (advance [state consume-all?]))
 
 (defn- init-state [ctx node]
-  {:pre [(node? node)]}
   (let [[node-type & children] node]
     (SpecState. (transient [node-type]) children ctx)))
 
@@ -110,9 +109,11 @@
     [ctx node]))
 
 (defn- expectations->message [expectations]
-  (if (= 1 (count expectations))
-    (str "expected " (first expectations))
-    (str "expected one of" (string/join ", " (sort (set expectations))))))
+  (let [expectation-set (set expectations)]
+    (if (= 1 (count expectation-set))
+      (str "expected " (first expectation-set))
+      (let [sorted (vec (sort expectation-set))]
+        (str "expected " (string/join ", " (pop sorted)) " or " (peek sorted))))))
 
 (defn- peek-node [^SpecState state]
   (first (.-remaining state)))
@@ -142,8 +143,11 @@
   (expectations [_] nil)
   (accept [this node]
     (or (.accept inner node) this))
-  (advance [_ state]
-    (push-analyzed! state nil)))
+  (advance [_ state consume-all?]
+    (if (or (not consume-all?)
+            (nil? (peek-node state)))
+      (push-analyzed! state nil)
+      (throw (spec-ex inner state)))))
 
 (defn ? [spec]
   (->OptionalSpec (specify spec)))
@@ -152,11 +156,15 @@
   Spec
   (expectations [_] nil)
   (accept [this _] this)
-  (advance [_ state]
+  (advance [_ state consume-all?]
     (loop [accepted ^Spec (.accept inner (peek-node state))]
-      (when accepted
-        (.advance accepted state)
-        (recur (.accept inner (peek-node state)))))))
+      (if accepted
+        ; inner spec matches, can continue
+        (do (.advance accepted state consume-all?)
+            (recur (.accept inner (peek-node state))))
+        (when (and consume-all? (peek-node state))
+          ; still nodes remaining although this spec should consume all => error
+          (throw (spec-ex inner state)))))))
 
 (defn * [spec]
   (->ZeroToManySpec (specify spec)))
@@ -166,11 +174,15 @@
   (expectations [_] (.expectations inner))
   (accept [this node]
     (when (.accept inner node) this))
-  (advance [_ state]
-    (loop [spec ^Spec (.accept inner (peek-node state))]
-      (when spec
-        (.advance spec state)
-        (recur (.accept spec (peek-node state)))))))
+  (advance [_ state consume-all?]
+    (loop [accepted ^Spec (.accept inner (peek-node state))]
+      (if accepted
+        ; inner spec matches, can continue
+        (do (.advance accepted state consume-all?)
+            (recur (.accept inner (peek-node state))))
+        (when (and consume-all? (peek-node state))
+          ; still nodes remaining although this spec should consume all => error
+          (throw (spec-ex inner state)))))))
 
 (defn + [spec]
   (->AtLeastOneSpec (specify spec)))
@@ -198,10 +210,10 @@
   (accept [this node]
     (when (.accept ^Spec (first specs) node)
       this))
-  (advance [_ state]
+  (advance [_ state consume-all?]
     (loop [[spec & xs] specs]
       (if-let [accepted (.accept ^Spec spec (peek-node state))]
-        (.advance ^Spec accepted state)
+        (.advance ^Spec accepted state (and consume-all? (empty? xs)))
         (throw (spec-ex spec state)))
       (when xs (recur xs)))))
 
@@ -213,12 +225,39 @@
       1 (first specs)
       (->SeqSpec specs))))
 
+(defrecord ReaderCondSpec [^Spec value]
+  Spec
+  (expectations [_] (.expectations value))
+  (advance [_ state _]
+    (let [ctx (get-ctx state)
+          node (peek-node state)
+          [ctx' node'] (analyze-node-with #(reader-cond-analyzer %1 %2 value) ctx node)]
+      (advance! state)
+      (push-analyzed! state node')
+      (set-ctx! state ctx'))))
+
+(take-nth 2 [1 2 3 4])
+
+(defn- accept-reader-cond? [[node-type feats] predicate]
+  (cond
+    (= :reader-cond node-type)
+    (->> (take-nth 2 (nnext feats))
+         (every? predicate))
+    (= :reader-cond-splice node-type)
+    (let [vals (take-nth 2 (nnext feats))]
+      (and (every? #(= :vector (first %)) vals)
+           (every? predicate (mapcat next vals))))
+    :else false))
+
 (defrecord NodeSpec [predicate expecation analyzer]
   Spec
   (expectations [_] [expecation])
   (accept [this node]
-    (when (predicate node) this))
-  (advance [_ state]
+    (cond
+      (predicate node) this
+      (accept-reader-cond? node predicate) (->ReaderCondSpec this)
+      :else nil))
+  (advance [_ state _]
     (let [ctx (get-ctx state)
           node (peek-node state)
           [ctx' node'] (analyze-node-with analyzer ctx node)]
@@ -242,9 +281,9 @@
   (expectations [_] (.expectations inner))
   (accept [this node]
     (when (.accept inner node) this))
-  (advance [_ state]
+  (advance [_ state consume-all?]
     (set-ctx! state (ctx/push-lexical-scope (get-ctx state)))
-    (.advance inner state)
+    (.advance inner state consume-all?)
     (set-ctx! state (ctx/pop-lexical-scope (get-ctx state)))))
 
 (defn in-scope [& specs]
@@ -288,10 +327,11 @@
   [spec ctx node]
   (let [spec ^Spec (specify spec)
         state ^SpecState (init-state ctx node)]
-    (when-not (.accept spec (peek-node state))
-      (throw (spec-ex spec state)))
-    (.advance spec state)
-    (flush-state! state)))
+    (if-let [accepted ^Spec (.accept spec (peek-node state))]
+      (do (.advance accepted state true)
+          (flush-state! state))
+      (throw (spec-ex spec state)))))
+
 
 ;;; core node analyzers
 
@@ -371,6 +411,35 @@
     [(ctx/set-mode ctx' current-mode)
      [:syntax-quote quoted']]))
 
+(defn- reader-cond-analyzer [ctx [reader-cond-type feats] ^Spec val-spec]
+  (letfn [(value-analyzer [ctx node]
+            (let [[ctx' [_ node']] (analyze val-spec ctx [:dummy node])]
+              [ctx' node']))
+          (splicing-value-analyzer [ctx [node-type & vals :as vals-node]]
+            (when (not= :vector node-type)
+              (throw (analysis-ex "expected feature values to be a vector" vals-node)))
+            (loop [result (transient [node-type])
+                   ctx ctx
+                   [val & xs] vals]
+              (if val
+                (let [[ctx' val'] (analyze-node-with value-analyzer ctx val)]
+                  (recur (conj! result val') ctx' xs))
+                [ctx (persistent! result)])))
+          (features-list-analyzer [ctx node val-analyzer]
+            (loop [result (transient [(first node)])
+                   ctx ctx
+                   [[feat val] & xs] (partition-all 2 2 (next node))]
+              (if feat
+                (let [[ctx' feat'] (analyze-node-with default-node-analyzer ctx feat)
+                      [ctx' val'] (analyze-node-with val-analyzer ctx' val)]
+                  (recur (conj! (conj! result feat') val') ctx' xs))
+                [ctx (persistent! result)])))]
+    (let [vals-analyzer (case reader-cond-type
+                          :reader-cond value-analyzer
+                          :reader-cond-splice splicing-value-analyzer)
+          [ctx' feats'] (analyze-node-with #(features-list-analyzer %1 %2 vals-analyzer) ctx feats)]
+      [ctx' [reader-cond-type feats']])))
+
 (doseq [lit-type [:symbol :keyword :string :number :boolean :char :regex :nil]]
   (vswap! node-analyzers assoc lit-type literal-node-analyzer))
 
@@ -398,7 +467,7 @@
   (let [spec (specify spec)]
     (node #(= :vector (first %)) "vector" #(analyze spec %1 %2))))
 
-(defn map* [spec]
+(defn map-node [spec]
   (let [spec (specify spec)]
     (node #(= :map (first %)) "map" #(analyze spec %1 %2))))
 
